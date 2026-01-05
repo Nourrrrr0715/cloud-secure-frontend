@@ -2,59 +2,66 @@ import React, { useState, useEffect } from 'react';
 
 function App() {
     const [user, setUser] = useState(null);
-    const [status, setStatus] = useState('Prêt');
-    const [step, setStep] = useState(-1);
+    const [status, setStatus] = useState('Prêt à lancer');
+    const [step, setStep] = useState(-1); // -1: pas commencé, 0: Fetch, 1: Build, 2: Deploy
 
     useEffect(() => {
         fetch('http://localhost:5001/api/user', { credentials: 'include' })
-            .then(res => res.json())
-            .then(data => setUser(data))
-            .catch(() => setStatus("Serveur hors ligne"));
+            .then(res => res.json()).then(setUser);
     }, []);
 
-    const startFetch = async () => {
-        setStep(0);
-        setStatus('Clonage en cours...');
+    const runPipeline = async () => {
         try {
-            const res = await fetch('http://localhost:5001/api/pipeline/fetch', { method: 'POST', credentials: 'include' });
+            // ÉTAPE 1 : FETCH
+            setStep(0);
+            setStatus('Récupération du code (Git Pull)...');
+            let res = await fetch('http://localhost:5001/api/pipeline/fetch', { method: 'POST', credentials: 'include' });
+
+            // ÉTAPE 2 : BUILD
+            setStep(1);
+            setStatus('Construction des images Docker localement...');
+            res = await fetch('http://localhost:5001/api/pipeline/build', { method: 'POST', credentials: 'include' });
+
+            // ÉTAPE 3 : DEPLOY
+            setStep(2);
+            setStatus('Connexion SSH et Déploiement sur la VM de production...');
+            res = await fetch('http://localhost:5001/api/pipeline/deploy', { method: 'POST', credentials: 'include' });
+
             const data = await res.json();
             if (data.success) {
-                setStatus('Code récupéré avec succès !');
-                setStep(1);
-            } else { setStatus('Erreur : ' + data.error); }
-        } catch (e) { setStatus('Erreur serveur'); }
+                setStep(3);
+                setStatus('Félicitations ! L\'application est en ligne sur la VM.');
+            }
+        } catch (e) {
+            setStatus('Échec du pipeline : ' + e.message);
+        }
     };
 
-    if (!user) {
-        return (
-            <div className="h-screen flex flex-col items-center justify-center bg-slate-900 text-white">
-                <h1 className="text-3xl font-bold mb-6">CI/CD Sécurisé - Connexion</h1>
-                <button onClick={() => window.location.href='http://localhost:5001/auth/github'}
-                        className="bg-white text-black px-6 py-2 rounded-lg font-bold hover:bg-gray-200">
-                    Se connecter avec GitHub
-                </button>
-            </div>
-        );
-    }
+    if (!user) return <div className="p-20 text-center"><button onClick={() => window.location.href='http://localhost:5001/auth/github'}>Connexion GitHub</button></div>;
 
     return (
-        <div className="p-10 bg-gray-50 min-h-screen font-sans">
-            <div className="max-w-2xl mx-auto bg-white p-8 rounded-2xl shadow-lg">
-                <div className="flex justify-between items-center mb-8">
-                    <h2 className="text-xl font-bold">Pipeline Dashboard</h2>
-                    <span className="text-sm bg-blue-100 text-blue-800 px-3 py-1 rounded-full">User: {user.username}</span>
-                </div>
+        <div className="max-w-xl mx-auto mt-20 p-8 bg-white shadow-2xl rounded-3xl border border-gray-100">
+            <h1 className="text-2xl font-black mb-6 text-gray-800">Pipeline CI/CD Sécurisé</h1>
 
-                <div className="flex gap-4 mb-8">
-                    <div className={`flex-1 h-2 rounded ${step >= 0 ? 'bg-blue-600' : 'bg-gray-200'}`}></div>
-                    <div className={`flex-1 h-2 rounded ${step >= 1 ? 'bg-blue-600' : 'bg-gray-200'}`}></div>
-                    <div className={`flex-1 h-2 rounded ${step >= 2 ? 'bg-blue-600' : 'bg-gray-200'}`}></div>
-                </div>
+            <div className="flex gap-2 mb-8">
+                {[0, 1, 2].map(i => (
+                    <div key={i} className={`h-3 flex-1 rounded-full transition-all duration-500 ${step >= i ? 'bg-indigo-600' : 'bg-gray-200'}`} />
+                ))}
+            </div>
 
-                <button onClick={startFetch} className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold hover:bg-blue-700">
-                    Lancer l'Étape 4 : Récupérer le code
-                </button>
-                <p className="mt-4 text-center text-gray-500 italic">{status}</p>
+            <button
+                onClick={runPipeline}
+                disabled={step > -1 && step < 3}
+                className={`w-full py-4 rounded-2xl font-bold text-white shadow-lg transition-all
+          ${step > -1 && step < 3 ? 'bg-gray-400 animate-pulse' : 'bg-indigo-600 hover:bg-indigo-700'}`}>
+                {step > -1 && step < 3 ? 'Traitement en cours...' : 'Déployer vers Production'}
+            </button>
+
+            <div className="mt-8 p-4 bg-indigo-50 rounded-xl border border-indigo-100">
+                <p className="text-sm font-medium text-indigo-900 leading-relaxed">
+                    <span className="font-bold uppercase text-[10px] block text-indigo-400 mb-1 tracking-widest">Journal d'activité</span>
+                    {status}
+                </p>
             </div>
         </div>
     );
