@@ -7,35 +7,49 @@ const cors = require('cors');
 const passport = require('passport');
 const GitHubStrategy = require('passport-github2').Strategy;
 const session = require('express-session');
-const { Client } = require('ssh2'); // Pour la connexion VM
+const { Client } = require('ssh2');
 
 const app = express();
 const PORT = 5001;
 
-// Middlewares
+// Configuration Middlewares
 app.use(cors({ origin: 'http://localhost:3000', credentials: true }));
 app.use(express.json());
-app.use(session({ secret: process.env.SESSION_SECRET, resave: false, saveUninitialized: false }));
+app.use(session({
+    secret: process.env.SESSION_SECRET || 'secret_temporaire',
+    resave: false,
+    saveUninitialized: false
+}));
+
 app.use(passport.initialize());
 app.use(passport.session());
 
-// Auth GitHub
 passport.serializeUser((user, done) => done(null, user));
 passport.deserializeUser((obj, done) => done(null, obj));
+
 passport.use(new GitHubStrategy({
     clientID: process.env.GITHUB_CLIENT_ID,
     clientSecret: process.env.GITHUB_CLIENT_SECRET,
     callbackURL: `http://localhost:${PORT}/auth/github/callback`
-}, (at, rt, profile, done) => done(null, profile)));
+}, (accessToken, refreshToken, profile, done) => done(null, profile)));
+
+// --- ROUTES AUTHENTIFICATION ---
+app.get('/auth/github', passport.authenticate('github', { scope: ['user:email'] }));
+app.get('/auth/github/callback', passport.authenticate('github', { failureRedirect: '/' }), (req, res) => {
+    res.redirect('http://localhost:3000');
+});
+app.get('/api/user', (req, res) => res.json(req.user || null));
+app.get('/logout', (req, res) => { req.logout(() => res.redirect('http://localhost:3000')); });
 
 // --- ROUTES PIPELINE ---
 
-// 1. FETCH
+// 1. FETCH (Local)
 app.post('/api/pipeline/fetch', (req, res) => {
-    if (!req.isAuthenticated()) return res.status(401).json({ error: "Non autorisé" });
+    if (!req.isAuthenticated()) return res.status(401).json({ success: false });
     const repoUrl = "https://github.com/ML-Laurane/Appli-PCS.git";
-    const projectPath = path.join(__dirname, 'workspace', 'app-metier');
-    if (!fs.existsSync(path.join(__dirname, 'workspace'))) fs.mkdirSync(path.join(__dirname, 'workspace'));
+    const workspace = path.join(__dirname, 'workspace');
+    const projectPath = path.join(workspace, 'app-metier');
+    if (!fs.existsSync(workspace)) fs.mkdirSync(workspace);
 
     const command = fs.existsSync(projectPath) ? `git -C ${projectPath} pull` : `git clone ${repoUrl} ${projectPath}`;
     exec(command, (err) => {
@@ -44,38 +58,35 @@ app.post('/api/pipeline/fetch', (req, res) => {
     });
 });
 
-// 2. BUILD (DOCKER COMPOSE)
+// 2. BUILD (Local Docker Compose)
 app.post('/api/pipeline/build', (req, res) => {
-    if (!req.isAuthenticated()) return res.status(401).json({ error: "Non autorisé" });
+    if (!req.isAuthenticated()) return res.status(401).json({ success: false });
     const projectPath = path.join(__dirname, 'workspace', 'app-metier');
-    exec(`cd ${projectPath} && docker-compose build`, (err) => {
+    exec(`cd ${projectPath} && docker compose build`, (err) => {
         if (err) return res.status(500).json({ success: false, error: err.message });
         res.json({ success: true });
     });
 });
 
-// 3. DEPLOY (SSH VERS VM)
+// 3. DEPLOY (SSH vers VM Debian)
 app.post('/api/pipeline/deploy', (req, res) => {
-    if (!req.isAuthenticated()) return res.status(401).json({ error: "Non autorisé" });
-
+    if (!req.isAuthenticated()) return res.status(401).json({ success: false });
     const conn = new Client();
     conn.on('ready', () => {
-        // Commande : Aller dans le dossier sur la VM, Pull le code, et relancer les containers
-        const deployCommand = `cd /home/ubuntu/appli-pcs && git pull && docker-compose up -d --build`;
-
-        conn.exec(deployCommand, (err, stream) => {
-            if (err) return res.status(500).json({ success: false, error: err.message });
-            stream.on('close', () => {
-                conn.end();
-                res.json({ success: true });
-            }).on('data', (data) => console.log('VM:', data.toString()));
+        const deployCmd = `cd /home/debian/Appli-PCS && git pull && docker compose up -d --build`;
+        conn.exec(deployCmd, (err, stream) => {
+            if (err) return res.status(500).json({ success: false });
+            stream.on('close', () => { conn.end(); res.json({ success: true }); })
+                .on('data', (data) => console.log('VM:', data.toString()));
         });
-    }).connect({
-        host: process.env.VM_IP,
-        port: 22,
-        username: 'debian',
-        privateKey: fs.readFileSync(process.env.SSH_KEY)
-    });
+    }).on('error', (err) => res.status(500).json({ success: false, error: err.message }))
+        .connect({
+            host: '127.0.0.1',
+            port: 2222,
+            username: 'debian',
+            privateKey: fs.readFileSync('/Users/dev02/.ssh/id_deploy_tp'),
+            readyTimeout: 20000
+        });
 });
 
-app.listen(PORT, () => console.log(`Serveur sur port ${PORT}`));
+app.listen(PORT, () => console.log(`Back-end prêt sur le port ${PORT}`));

@@ -2,66 +2,84 @@ import React, { useState, useEffect } from 'react';
 
 function App() {
     const [user, setUser] = useState(null);
-    const [status, setStatus] = useState('Prêt à lancer');
-    const [step, setStep] = useState(-1); // -1: pas commencé, 0: Fetch, 1: Build, 2: Deploy
+    const [status, setStatus] = useState('Prêt');
+    const [step, setStep] = useState(-1); // -1: repos, 0: fetch, 1: build, 2: deploy, 3: fini
 
     useEffect(() => {
         fetch('http://localhost:5001/api/user', { credentials: 'include' })
-            .then(res => res.json()).then(setUser);
+            .then(res => res.json())
+            .then(data => setUser(data));
     }, []);
 
     const runPipeline = async () => {
         try {
-            // ÉTAPE 1 : FETCH
             setStep(0);
-            setStatus('Récupération du code (Git Pull)...');
-            let res = await fetch('http://localhost:5001/api/pipeline/fetch', { method: 'POST', credentials: 'include' });
+            setStatus('Récupération du code...');
+            await fetch('http://localhost:5001/api/pipeline/fetch', { method: 'POST', credentials: 'include' });
 
-            // ÉTAPE 2 : BUILD
             setStep(1);
-            setStatus('Construction des images Docker localement...');
-            res = await fetch('http://localhost:5001/api/pipeline/build', { method: 'POST', credentials: 'include' });
+            setStatus('Build Docker local...');
+            await fetch('http://localhost:5001/api/pipeline/build', { method: 'POST', credentials: 'include' });
 
-            // ÉTAPE 3 : DEPLOY
             setStep(2);
-            setStatus('Connexion SSH et Déploiement sur la VM de production...');
-            res = await fetch('http://localhost:5001/api/pipeline/deploy', { method: 'POST', credentials: 'include' });
-
+            setStatus('Déploiement sur la VM (SSH)...');
+            const res = await fetch('http://localhost:5001/api/pipeline/deploy', { method: 'POST', credentials: 'include' });
             const data = await res.json();
+
             if (data.success) {
                 setStep(3);
-                setStatus('Félicitations ! L\'application est en ligne sur la VM.');
+                setStatus('Déploiement terminé avec succès !');
+            } else {
+                throw new Error(data.error);
             }
         } catch (e) {
-            setStatus('Échec du pipeline : ' + e.message);
+            setStatus('Erreur : ' + e.message);
+            setStep(-1);
         }
     };
 
-    if (!user) return <div className="p-20 text-center"><button onClick={() => window.location.href='http://localhost:5001/auth/github'}>Connexion GitHub</button></div>;
+    if (!user) {
+        return (
+            <div className="h-screen flex flex-col items-center justify-center bg-slate-900 text-white">
+                <h1 className="text-4xl font-black mb-8">Cloud Secure CI/CD</h1>
+                <button onClick={() => window.location.href='http://localhost:5001/auth/github'}
+                        className="bg-white text-black px-8 py-3 rounded-full font-bold hover:scale-105 transition">
+                    Se connecter avec GitHub
+                </button>
+            </div>
+        );
+    }
 
     return (
-        <div className="max-w-xl mx-auto mt-20 p-8 bg-white shadow-2xl rounded-3xl border border-gray-100">
-            <h1 className="text-2xl font-black mb-6 text-gray-800">Pipeline CI/CD Sécurisé</h1>
+        <div className="min-h-screen bg-gray-50 p-10 font-sans text-gray-800">
+            <div className="max-w-2xl mx-auto bg-white rounded-3xl shadow-xl p-8">
+                <div className="flex justify-between items-center mb-10">
+                    <h2 className="text-2xl font-bold">Tableau de Bord</h2>
+                    <div className="flex items-center gap-3">
+            <span className="text-sm font-medium bg-blue-50 text-blue-700 px-4 py-1 rounded-full border border-blue-100 italic">
+              Connecté : {user.username}
+            </span>
+                    </div>
+                </div>
 
-            <div className="flex gap-2 mb-8">
-                {[0, 1, 2].map(i => (
-                    <div key={i} className={`h-3 flex-1 rounded-full transition-all duration-500 ${step >= i ? 'bg-indigo-600' : 'bg-gray-200'}`} />
-                ))}
-            </div>
+                {/* Barre de progression */}
+                <div className="flex gap-4 mb-10">
+                    {[0, 1, 2].map((i) => (
+                        <div key={i} className={`h-2 flex-1 rounded-full transition-all duration-700 ${step >= i ? 'bg-blue-600' : 'bg-gray-100'}`} />
+                    ))}
+                </div>
 
-            <button
-                onClick={runPipeline}
-                disabled={step > -1 && step < 3}
-                className={`w-full py-4 rounded-2xl font-bold text-white shadow-lg transition-all
-          ${step > -1 && step < 3 ? 'bg-gray-400 animate-pulse' : 'bg-indigo-600 hover:bg-indigo-700'}`}>
-                {step > -1 && step < 3 ? 'Traitement en cours...' : 'Déployer vers Production'}
-            </button>
+                <button
+                    onClick={runPipeline}
+                    disabled={step >= 0 && step < 3}
+                    className={`w-full py-4 rounded-2xl font-bold text-lg shadow-lg transition-all
+            ${step >= 0 && step < 3 ? 'bg-gray-300 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'}`}>
+                    {step >= 0 && step < 3 ? 'Opération en cours...' : 'Lancer le Pipeline de Déploiement'}
+                </button>
 
-            <div className="mt-8 p-4 bg-indigo-50 rounded-xl border border-indigo-100">
-                <p className="text-sm font-medium text-indigo-900 leading-relaxed">
-                    <span className="font-bold uppercase text-[10px] block text-indigo-400 mb-1 tracking-widest">Journal d'activité</span>
-                    {status}
-                </p>
+                <div className="mt-8 p-6 bg-gray-50 rounded-2xl border border-gray-100">
+                    <p className="text-center font-mono text-sm text-gray-600">{status}</p>
+                </div>
             </div>
         </div>
     );
