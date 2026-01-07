@@ -1,0 +1,23 @@
+# Dockerfile pour le frontend React en développement
+FROM node:18-alpine
+
+WORKDIR /app
+
+# Copier les fichiers de dépendances
+COPY package*.json ./
+
+# Installer toutes les dépendances (y compris dev)
+RUN npm ci
+
+# Copier le reste des fichiers
+COPY . .
+
+# Exposer le port du serveur de développement React
+EXPOSE 3000
+
+# Variables d'environnement
+ENV PORT=3000
+ENV REACT_APP_API_URL=http://localhost:5001
+
+# Démarrer le serveur de développement React
+CMD ["npm", "start"]
