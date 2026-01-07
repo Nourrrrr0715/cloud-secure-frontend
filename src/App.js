@@ -6,11 +6,6 @@ function App() {
     const [isDeploying, setIsDeploying] = useState(false);
     const logEndRef = useRef(null);
 
-    // Auto-scroll pour la console
-    useEffect(() => {
-        logEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    }, [logs]);
-
     // Récupération de l'utilisateur et polling des logs
     useEffect(() => {
         fetch('http://localhost:5001/api/user', { credentials: 'include' })
@@ -20,7 +15,7 @@ function App() {
             fetch('http://localhost:5001/api/pipeline/logs')
                 .then(res => res.json())
                 .then(data => setLogs(data.logs || []));
-        }, 1000); // On demande les nouveaux logs chaque seconde
+        }, 1000);
 
         return () => clearInterval(interval);
     }, []);
@@ -50,7 +45,6 @@ function App() {
     return (
         <div className="min-h-screen bg-[#f8fafc] font-sans text-slate-900 p-8">
             <div className="max-w-5xl mx-auto">
-                {/* Header */}
                 <header className="flex justify-between items-center mb-10">
                     <div>
                         <h1 className="text-2xl font-bold tracking-tight">Production Pipeline</h1>
@@ -65,7 +59,6 @@ function App() {
                 </header>
 
                 <div className="grid grid-cols-3 gap-8">
-                    {/* Menu latéral */}
                     <div className="col-span-1 space-y-6">
                         <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm">
                             <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-4">Contrôles</h3>
@@ -88,7 +81,6 @@ function App() {
                         </div>
                     </div>
 
-                    {/* Console de Logs */}
                     <div className="col-span-2">
                         <div className="bg-[#0f172a] rounded-3xl shadow-2xl overflow-hidden border border-slate-800">
                             <div className="bg-slate-800/50 px-6 py-3 border-b border-slate-800 flex items-center gap-2">

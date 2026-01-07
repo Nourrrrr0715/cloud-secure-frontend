@@ -11,8 +11,8 @@ const { Client } = require('ssh2');
 
 const app = express();
 const PORT = 5001;
+let pipelineLogs = [];
 
-// --- CONFIGURATION ---
 app.use(cors({ origin: 'http://localhost:3000', credentials: true }));
 app.use(express.json());
 app.use(session({
@@ -33,105 +33,142 @@ passport.use(new GitHubStrategy({
     callbackURL: `http://localhost:${PORT}/auth/github/callback`
 }, (at, rt, profile, done) => done(null, profile)));
 
-// Ajoute cette variable globale en haut de server.js
-let pipelineLogs = [];
-
-// Modifie la fonction runFullPipeline pour qu'elle remplisse les logs
+// --- pipeline logique métier ---
 const runFullPipeline = () => {
-    pipelineLogs = []; // Reset au début
-    pipelineLogs.push(`[${new Date().toLocaleTimeString()}] 🚀 Démarrage du pipeline...`);
+    pipelineLogs = [];
+    const log = (msg) => {
+        const entry = `[${new Date().toLocaleTimeString()}] ${msg}`;
+        pipelineLogs.push(entry);
+        console.log(entry);
+    };
 
     return new Promise((resolve, reject) => {
-        const projectPath = path.join(__dirname, 'workspace', 'app-metier');
-        const repoUrl = "https://github.com/ML-Laurane/Appli-PCS.git";
+        const workspace = path.join(__dirname, 'workspace');
+        const projectPath = path.join(workspace, 'app-metier');
 
-        const log = (msg) => {
-            const entry = `[${new Date().toLocaleTimeString()}] ${msg}`;
-            console.log(entry);
-            pipelineLogs.push(entry);
-        };
+        // Configuration des deux services
+        const services = [
+            {
+                name: 'frontend',
+                image: 'app-pcs-front:latest',
+                container: 'app-pcs-front-cont',
+                port: '3000:3000',
+                path: path.join(projectPath, 'frontend')
+            },
+            {
+                name: 'backend',
+                image: 'app-pcs-back:latest',
+                container: 'app-pcs-back-cont',
+                port: '8080:8080',
+                path: path.join(projectPath, 'backend')
+            }
+        ];
 
-        log("Pulling code from GitHub...");
-        const fetchCmd = fs.existsSync(projectPath) ? `git -C ${projectPath} pull` : `git clone ${repoUrl} ${projectPath}`;
+        log("🚀 Démarrage du Pipeline Full-Stack (Front + Back)...");
 
-        exec(fetchCmd, (err) => {
-            if (err) { log("❌ Erreur Fetch"); return reject(err); }
-            log("✅ Code à jour.");
+        // 1. Git Pull
+        const fetchCmd = fs.existsSync(projectPath) ? `git -C ${projectPath} pull` : `git clone https://github.com/ML-Laurane/Appli-PCS.git ${projectPath}`;
 
-            log("Building Docker images (local)...");
-            exec(`cd ${projectPath} && docker compose build`, (err) => {
-                if (err) { log("❌ Erreur Build"); return reject(err); }
-                log("✅ Images Docker prêtes.");
+        exec(fetchCmd, async (err) => {
+            if (err) return reject("Erreur Git: " + err.message);
+            log("✅ Code source mis à jour.");
 
+            try {
                 const conn = new Client();
-                conn.on('ready', () => {
-                    log("Connexion SSH établie avec la VM Debian.");
-                    const deployCmd = `cd /home/debian/Appli-PCS && git pull && docker compose up -d --build`;
-                    conn.exec(deployCmd, (err, stream) => {
-                        stream.on('close', () => {
-                            conn.end();
-                            log("🚀 DÉPLOIEMENT TERMINÉ ! L'app est en ligne.");
-                            resolve();
-                        }).on('data', (data) => log(`VM: ${data.toString().trim()}`));
-                    });
+                conn.on('ready', async () => {
+                    log("📡 Connexion SSH établie.");
+
+                    for (const service of services) {
+                        log(`--- Service : ${service.name.toUpperCase()} ---`);
+                        const tarPath = path.join(workspace, `${service.name}.tar`);
+
+                        // 2. Build local
+                        log(`🔨 Build de l'image ${service.image}...`);
+                        await new Promise((res, rej) => {
+                            exec(`docker build -t ${service.image} ${service.path}`, (e) => e ? rej(e) : res());
+                        });
+
+                        // 3. Export .tar
+                        log(`📦 Création de l'archive ${service.name}.tar...`);
+                        await new Promise((res, rej) => {
+                            exec(`docker save ${service.image} -o ${tarPath}`, (e) => e ? rej(e) : res());
+                        });
+
+                        // 4. Nettoyage VM pour ce port précis
+                        log(`🧹 Arrêt de l'ancien conteneur sur le port ${service.port.split(':')[0]}...`);
+                        await new Promise((res) => {
+                            const cleanCmd = `ids=$(docker ps -q --filter "publish=${service.port.split(':')[0]}"); if [ ! -z "$ids" ]; then docker stop $ids && docker rm $ids; fi; exit`;
+                            conn.exec(cleanCmd, (e, stream) => {
+                                stream.on('end', () => res());
+                                stream.resume();
+                            });
+                        });
+
+                        // 5. Transfert et Load
+                        log(`📤 Transfert de l'image ${service.name} vers la VM...`);
+                        await new Promise((res, rej) => {
+                            conn.exec('docker load', (e, stream) => {
+                                if (e) return rej(e);
+                                fs.createReadStream(tarPath).pipe(stream);
+                                stream.on('data', (d) => log(`VM: ${d.toString().trim()}`));
+                                stream.on('end', () => res());
+                            });
+                        });
+
+                        // 6. Lancement
+                        log(`🏃 Lancement du conteneur ${service.container}...`);
+                        await new Promise((res) => {
+                            conn.exec(`docker run -d --name ${service.container} -p ${service.port} ${service.image}; exit`, (e, stream) => {
+                                stream.on('end', () => {
+                                    if (fs.existsSync(tarPath)) fs.unlinkSync(tarPath);
+                                    res();
+                                });
+                                stream.resume();
+                            });
+                        });
+                        log(`✅ Service ${service.name} déployé.`);
+                    }
+
+                    conn.end();
+                    log("✨ PIPELINE FULL-STACK TERMINÉ AVEC SUCCÈS !");
+                    resolve();
                 }).connect({
                     host: '127.0.0.1',
                     port: 2222,
                     username: 'debian',
                     privateKey: fs.readFileSync('/Users/dev02/.ssh/id_deploy_tp')
                 });
-            });
+
+            } catch (error) {
+                log("❌ Erreur pendant le déploiement : " + error.message);
+                reject(error);
+            }
         });
     });
 };
 
-// Ajoute cette route pour que le Front puisse récupérer les logs
-app.get('/api/pipeline/logs', (req, res) => {
-    res.json({ logs: pipelineLogs });
-});
-
-// --- ROUTE WEBHOOK (AUTOMATIQUE) ---
-app.post('/api/webhook', (req, res) => {
-    const event = req.headers['x-github-event'];
-    const payload = req.body;
-
-    if (event === 'push') {
-        const branch = payload.ref;
-        if (branch === 'refs/heads/main') {
-            console.log("📢 Webhook reçu: Push sur main. Lancement du déploiement...");
-            runFullPipeline()
-                .then(() => console.log("✨ Auto-déploiement terminé avec succès."))
-                .catch(err => console.error("❌ Échec de l'auto-déploiement:", err));
-        }
-    }
-    res.status(200).send('OK');
-});
-
-// --- ROUTES PIPELINE (MANUEL) ---
-app.post('/api/pipeline/fetch', (req, res) => {
-    if (!req.isAuthenticated()) return res.status(401).send();
-    // Ta logique existante...
-    const projectPath = path.join(__dirname, 'workspace', 'app-metier');
-    const command = fs.existsSync(projectPath) ? `git -C ${projectPath} pull` : `git clone https://github.com/ML-Laurane/Appli-PCS.git ${projectPath}`;
-    exec(command, (err) => err ? res.status(500).json({success:false}) : res.json({success:true}));
-});
-
-app.post('/api/pipeline/build', (req, res) => {
-    if (!req.isAuthenticated()) return res.status(401).send();
-    exec(`cd ${path.join(__dirname, 'workspace', 'app-metier')} && docker compose build`, (err) =>
-        err ? res.status(500).json({success:false}) : res.json({success:true}));
-});
+// --- ROUTES ---
+app.get('/api/pipeline/logs', (req, res) => res.json({ logs: pipelineLogs }));
 
 app.post('/api/pipeline/deploy', (req, res) => {
     if (!req.isAuthenticated()) return res.status(401).send();
     runFullPipeline()
         .then(() => res.json({ success: true }))
-        .catch(err => res.status(500).json({ success: false, error: err }));
+        .catch(err => {
+            pipelineLogs.push(`❌ ERREUR: ${err}`);
+            res.status(500).json({ success: false, error: err });
+        });
 });
 
-// --- AUTH ROUTES ---
+app.post('/api/webhook', (req, res) => {
+    if (req.headers['x-github-event'] === 'push' && req.body.ref === 'refs/heads/main') {
+        runFullPipeline().catch(console.error);
+    }
+    res.status(200).send('OK');
+});
+
+app.get('/api/user', (req, res) => res.json(req.user || null));
 app.get('/auth/github', passport.authenticate('github', { scope: ['user:email'] }));
 app.get('/auth/github/callback', passport.authenticate('github', { failureRedirect: '/' }), (req, res) => res.redirect('http://localhost:3000'));
-app.get('/api/user', (req, res) => res.json(req.user || null));
 
 app.listen(PORT, () => console.log(`Back-end prêt sur le port ${PORT}`));
