@@ -13,6 +13,8 @@ const app = express();
 const PORT = 5001;
 let pipelineLogs = [];
 
+const SSH_PRIVATE_KEY_PATH = path.join(__dirname, 'certs', 'id_deploy_tp2');
+
 app.use(cors({ origin: 'http://localhost:3000', credentials: true }));
 app.use(express.json());
 app.use(session({
@@ -76,7 +78,7 @@ const runFullPipeline = () => {
             try {
                 const conn = new Client();
                 conn.on('ready', async () => {
-                    log("📡 Connexion SSH établie.");
+                    log("📡 Connexion SSH établie avec la VM.");
 
                     for (const service of services) {
                         log(`--- Service : ${service.name.toUpperCase()} ---`);
@@ -98,7 +100,7 @@ const runFullPipeline = () => {
                         log(`🧹 Arrêt de l'ancien conteneur sur le port ${service.port.split(':')[0]}...`);
                         await new Promise((res) => {
                             const cleanCmd = `ids=$(docker ps -q --filter "publish=${service.port.split(':')[0]}"); if [ ! -z "$ids" ]; then docker stop $ids && docker rm $ids; fi; exit`;
-                            conn.exec(cleanCmd, (e, stream) => {
+                            conn.exec(cleanCmd, { pty: true }, (e, stream) => {
                                 stream.on('end', () => res());
                                 stream.resume();
                             });
@@ -118,7 +120,7 @@ const runFullPipeline = () => {
                         // 6. Lancement
                         log(`🏃 Lancement du conteneur ${service.container}...`);
                         await new Promise((res) => {
-                            conn.exec(`docker run -d --name ${service.container} -p ${service.port} ${service.image}; exit`, (e, stream) => {
+                            conn.exec(`docker run -d --name ${service.container} -p ${service.port} ${service.image}; exit`, { pty: true }, (e, stream) => {
                                 stream.on('end', () => {
                                     if (fs.existsSync(tarPath)) fs.unlinkSync(tarPath);
                                     res();
@@ -133,10 +135,12 @@ const runFullPipeline = () => {
                     log("✨ PIPELINE FULL-STACK TERMINÉ AVEC SUCCÈS !");
                     resolve();
                 }).connect({
-                    host: '127.0.0.1',
-                    port: 2222,
+                    host: process.env.VM_HOST,
+                    port: parseInt(process.env.VM_PORT),
                     username: 'debian',
-                    privateKey: fs.readFileSync('/Users/dev02/.ssh/id_deploy_tp')
+                    privateKey: fs.readFileSync(SSH_PRIVATE_KEY_PATH),
+                    passphrase: 'debian',
+                    readyTimeout: 30000
                 });
 
             } catch (error) {
