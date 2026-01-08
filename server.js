@@ -91,7 +91,7 @@ const runFullPipeline = () => {
             log("✅ Code source mis à jour.");
 
             try {
-                log(`🔑 Tentative de connexion SSH à ${process.env.VM_IP || '192.168.20.128'}:22...`);
+                log(`🔑 Tentative de connexion SSH à ${process.env.VM_IP}:22...`);
                 const conn = new Client();
                 
                 conn.on('error', (err) => {
@@ -218,7 +218,7 @@ const runFullPipeline = () => {
                     log("📊 Tous les services sont opérationnels sur la VM");
                     resolve();
                 }).connect({
-                    host: process.env.VM_IP || '192.168.20.128',
+                    host: process.env.VM_IP,
                     port: 22,
                     username: 'debian',
                     privateKey: fs.readFileSync('/root/.ssh/id_deploy_tp'),
