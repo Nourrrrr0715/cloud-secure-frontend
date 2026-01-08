@@ -23,57 +23,55 @@ Le pipeline ne repose pas sur un simple `git pull` distant (sujet aux dérives),
 
 ## 🛠️ Pré-requis
 
-* **Node.js** v18+
 * **Docker Desktop** (lancé sur le poste hôte)
-* **VirtualBox** avec la VM Debian configurée (IP: `127.0.0.1`, Port SSH: `22`)
+* **VMWare** avec la VM Debian configurée
 
 ---
 
 ## 🚀 Installation & Lancement
 
 ### 1. Configuration de la VM
-Assurez-vous que Docker est installé sur la VM et que la clé publique du projet est autorisée :
+Assurez-vous d'installer la VM avec le lien de téléchargement (fichier ovf) :
 ```bash
-# Dans la VM Debian
-sudo apt update && sudo apt install -y docker.io
-# La clé publique est dans certs/id_deploy_tp2.pub
-cat id_deploy_tp.pub >> ~/.ssh/authorized_keys
+# Se connecter à la VM
+id = debian
+mdp = debian
+# récupérer l'adresse ip de la machine (récupérer celle d'ens33)
+ip a
 ```
+Image d'exemple :
+![img.png](img.png)
 
-### 2\. Configuration du projet
+## 2\. Configuration du projet CI/CD
 
-Clonez le projet et installez les dépendances :
+### 2.1. Création de l’OAuth GitHub (CI/CD)
 
-```Bash
-npm install
+GitHub → Settings → Developer settings → OAuth Apps → New OAuth App
+
+- Homepage URL : http://localhost:3000/
+- Callback URL : http://localhost:5001/auth/github/callback
+
+Récupérer :
+- Client ID
+- Client Secret
+
+### 2.2. Variables d’environnement
+
+Créer un fichier `.env` à la racine du projet CI/CD :
+
 ```
-
-
-### 3\. Variables d'environnement
-
-Créez un fichier `.env` à la racine du projet :
-
-Extrait de code
-
-```
-GITHUB_CLIENT_ID=votre_id
-GITHUB_CLIENT_SECRET=votre_secret
+GITHUB_CLIENT_ID=votre_id_OAuth
+GITHUB_CLIENT_SECRET=votre_secret_OAuth
 SESSION_SECRET=votre_secret_aleatoire
-VM_IP=127.0.0.1
-VM_PORT=22
+VM_IP=ip_de_la_VM
 ```
 
-
-### 4\. Lancement
+### 2.3\. Lancement
 
 ```Bash
-# Lancer le serveur (Port 5001)
-node server.js
-
-# Lancer le frontend (Port 3000)
-cd client && npm start
+# lancer le projet
+docker compose -up -d
 ```
-
 
 * * * * *
 
@@ -86,27 +84,18 @@ cd client && npm start
 >
 > Note technique : Dans un environnement réel, ces clés seraient injectées via un Vault (Secrets Manager).
 
-Droits sur les clés :
-
-Si vous êtes sur Linux/Mac, SSH impose des permissions strictes sur la clé privée :
-
-```Bash
-chmod 600 .ssh/id_deploy_tp
-```
-
-
 * * * * *
 
 📊 Fonctionnalités Clés
 -----------------------
 
-| **Fonctionnalité** | **Description**                                                          |
-| --- |--------------------------------------------------------------------------|
-| **Full-Stack Build** | Build parallèle du Frontend (3000) et du Backend (8080).                 |
-| **Real-time Logs** | Streaming des flux STDOUT de la VM vers l'interface React.               |
+| **Fonctionnalité** | **Description**                                                         |
+| --- |-------------------------------------------------------------------------|
+| **Full-Stack Build** | Build parallèle du Frontend (3000) et du Backend (5001).                |
+| **Real-time Logs** | Streaming des flux de la VM vers l'interface React.               |
 | **Port Cleaning** | Détection et arrêt automatique des conteneurs occupant les ports cibles. |
-| **Immuabilité** | Transfert d'images `.tar` pour garantir la parité entre Dev et Prod.     |
-| **Webhooks** | Intégration Ngrok/GitHub pour le déploiement continu au `git push`.      |
+| **Immuabilité** | Transfert d'images `.tar` pour garantir la parité entre Dev et Prod.    |
+| **Webhooks** | Intégration Ngrok/GitHub pour le déploiement continu au `git push`.     |
 
 * * * * *
 
@@ -115,8 +104,8 @@ chmod 600 .ssh/id_deploy_tp
 
 ```Plaintext
 .
-├── .ssh/               # Clés SSH de déploiement (Portabilité)
-├── src/              # Interface Dashboard (React)
+├── .ssh/                # Clés SSH de déploiement (Portabilité)
+├── src/                 # Interface Dashboard (React)
 ├── workspace/           # Espace temporaire de build (Images .tar)
 ├── server.js            # Orchestrateur du pipeline (Node/SSH2)
 └── .env                 # Configuration sensible
