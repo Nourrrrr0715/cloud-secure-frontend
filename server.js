@@ -99,7 +99,7 @@ const runFullPipeline = () => {
                 });
 
                 conn.on('ready', async () => {
-                    log("📡 Connexion SSH établie avec succès.");
+                    log("📡 Connexion SSH établie avec la VM.");
 
                     for (const service of services) {
                         log(`\n--- 🚢 Service : ${service.name.toUpperCase()} ---`);
