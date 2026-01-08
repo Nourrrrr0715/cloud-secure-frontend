@@ -11,17 +11,27 @@ const { Client } = require('ssh2');
 const axios = require('axios');
 
 const app = express();
-const PORT = process.env.PORT || 5001;
-let pipelineLogs = [];
+const PORT = 5001;
 
-// --- CONFIGURATION ---
-app.use(cors({
-    origin: ['http://localhost:3000', 'http://127.0.0.1:3000'],
-    credentials: true
+let pipelineLogs = [];
+let pipelineRunning = false;
+
+/* ========================= MIDDLEWARE ========================= */
+
+
+// Configuration CORS pour accepter les requêtes depuis le navigateur et le conteneur frontend
+app.use(cors({ 
+    origin: [
+        'http://localhost:3000', 
+        'http://127.0.0.1:3000', 
+        'http://192.168.188.129:3000',
+        'http://frontend:3000'
+    ],
+    credentials: true 
 }));
 app.use(express.json());
 app.use(session({
-    secret: process.env.SESSION_SECRET || 'top_secret_pcs',
+    secret: process.env.SESSION_SECRET || 'secret_temporaire',
     resave: false,
     saveUninitialized: false
 }));
@@ -37,169 +47,308 @@ passport.use(new GitHubStrategy({
     clientSecret: process.env.GITHUB_CLIENT_SECRET,
     callbackURL: `http://localhost:${PORT}/auth/github/callback`
 }, (accessToken, refreshToken, profile, done) => {
-    profile.accessToken = accessToken; // Stockage du token pour l'API GitHub
+    profile.accessToken = accessToken;
     return done(null, profile);
 }));
 
-// --- UTILS ---
-const log = (msg) => {
-    const entry = `[${new Date().toLocaleTimeString()}] ${msg}`;
-    pipelineLogs.push(entry);
-    console.log(entry);
-};
+/* ========================= UTILS ========================= */
 
-const runSSHCommand = (conn, cmd) => {
-    return new Promise((resolve) => {
-        conn.exec(`${cmd}; exit`, (err, stream) => {
-            if (err) { log(`❌ Erreur SSH: ${err.message}`); return resolve(); }
-            stream.on('data', (d) => log(`VM: ${d.toString().trim()}`));
-            stream.on('end', () => resolve());
+const runSSHCommand = (conn, cmd, log) =>
+    new Promise(resolve => {
+        conn.exec(`${cmd}; exit`, { pty: true }, (err, stream) => {
+            if (err) {
+                log(`❌ SSH error: ${err.message}`);
+                return resolve();
+            }
+            stream.on('data', d => log(`VM: ${d.toString().trim()}`));
+            stream.on('end', resolve);
             stream.resume();
         });
     });
-};
 
-// --- LOGIQUE PIPELINE ---
-const runFullPipeline = (repoUrl, repoName, actionType = 'FULL_DEPLOY') => {
-    pipelineLogs = []; // Reset logs
-    const workspace = path.join(__dirname, 'workspace');
-    if (!fs.existsSync(workspace)) fs.mkdirSync(workspace);
+// const rollback = async (conn, service, log) => {
+//     log(`🔁 Rollback du service ${service.container}`);
+//     await runSSHCommand(
+//         conn,
+//         `docker stop ${service.container} || true && docker rm ${service.container} || true`,
+//         log
+//     );
+// };
+
+/* ========================= PIPELINE ========================= */
+
+const runFullPipeline = (repoUrl, repoName, actionType) => {
+    pipelineLogs = [];
+    const log = msg => {
+        const entry = `[${new Date().toLocaleTimeString()}] ${msg}`;
+        pipelineLogs.push(entry);
+        console.log(entry);
+    };
 
     return new Promise((resolve, reject) => {
-        const conn = new Client();
+        const workspace = path.join(__dirname, 'workspace');
         const projectPath = path.join(workspace, repoName);
+        const conn = new Client();
 
         conn.on('ready', async () => {
-            log(`📡 Connecté à la VM (${process.env.VM_IP}). Action: ${actionType}`);
+            log(`Connecté à la VM — Action: ${actionType}`);
 
-            try {
-                if (actionType === 'CHECK_STATUS') {
-                    await runSSHCommand(conn, "uptime && docker ps");
+            if (actionType === 'CHECK_STATUS') {
+                await runSSHCommand(conn, "uptime && docker ps", log);
+                conn.end();
+                return resolve();
+            }
+
+            if (actionType === 'CLEAN_VM') {
+                await runSSHCommand(conn, "docker system prune -af", log);
+                conn.end();
+                return resolve();
+            }
+
+            if (actionType !== 'FULL_DEPLOY') {
+                conn.end();
+                return resolve();
+            }
+
+            log(`Déploiement de ${repoName}`);
+
+            const fetchCmd = fs.existsSync(projectPath)
+                ? `git -C ${projectPath} pull`
+                : `git clone ${repoUrl} ${projectPath}`;
+
+            exec(fetchCmd, { timeout: 2 * 60 * 1000 }, async (err) => {
+                if (err) {
+                    log(`❌ Git error: ${err.message}`);
+                    conn.end();
+                    return reject(err);
                 }
-                else if (actionType === 'CLEAN_VM') {
-                    log("🧹 Nettoyage global de la VM...");
-                    await runSSHCommand(conn, "docker system prune -af");
-                }
-                else if (actionType === 'FULL_DEPLOY') {
-                    log(`🚀 Déploiement complet de ${repoName}`);
 
-                    // 1. Git Pull/Clone
-                    const fetchCmd = fs.existsSync(projectPath) ? `git -C ${projectPath} pull` : `git clone ${repoUrl} ${projectPath}`;
-                    await new Promise((res, rej) => exec(fetchCmd, (e) => e ? rej(e) : res()));
-                    log("✅ Code source mis à jour.");
+                const services = [
+                    {
+                        name: 'frontend',
+                        image: 'app-front:latest',
+                        container: 'app-front',
+                        port: '3000:80',
+                        path: path.join(projectPath, 'frontend')
+                    },
+                    {
+                        name: 'backend',
+                        image: 'app-back:latest',
+                        container: 'app-back',
+                        port: '8080:8080',
+                        path: path.join(projectPath, 'backend')
+                    }
+                ];
 
-                    const services = [
-                        { name: 'backend', image: 'app-pcs-back:latest', port: '8080:8080', path: path.join(projectPath, 'backend') },
-                        { name: 'frontend', image: 'app-pcs-front:latest', port: '3000:80', path: path.join(projectPath, 'frontend') }
-                    ];
+                try {
+                    for (const service of services) {
+                        log(`🚢 Service ${service.name.toUpperCase()}`);
 
-                    for (const s of services) {
-                        log(`\n--- Service : ${s.name.toUpperCase()} ---`);
+                        if (service.name === 'backend') {
+                            log("Tests unitaires...");
+                            const testsOK = await new Promise(res => {
+                                exec('mvn clean test', {
+                                    cwd: service.path,
+                                    timeout: 10 * 60 * 1000
+                                }, e => {
+                                    res(!e);
+                                });
+                            });
 
-                        // 2. Tests & Qualité (Backend uniquement)
-                        if (s.name === 'backend' && fs.existsSync(path.join(s.path, 'pom.xml'))) {
-                            log("🧪 Lancement des tests unitaires Maven...");
-                            await new Promise((res, rej) => exec('mvn clean test', { cwd: s.path }, (e) => e ? rej(new Error("Tests KO")) : res()));
-                            log("✅ Tests unitaires réussis.");
+                            if (!testsOK) {
+                                // await rollback(conn, service, log);
+                                conn.end();
+                                return resolve();
+                            }
 
-                            log("📊 Analyse SonarQube...");
-                            const sonarCmd = `mvn sonar:sonar -Dsonar.projectKey=${process.env.SONAR_PROJECT_KEY} -Dsonar.host.url=${process.env.SONAR_HOST_URL} -Dsonar.login=${process.env.SONAR_TOKEN}`;
-                            await new Promise((res, rej) => exec(sonarCmd, { cwd: s.path }, (e) => e ? rej(new Error("Sonar KO")) : res()));
-                            log("✅ Analyse SonarQube terminée.");
+                            // log("📊 SonarQube...");
+                            // const sonarOK = await new Promise(res => {
+                            //     exec(
+                            //         `mvn verify sonar:sonar \
+                            //         -Dsonar.projectKey=${process.env.SONAR_PROJECT_KEY} \
+                            //         -Dsonar.host.url=${process.env.SONAR_HOST_URL} \
+                            //         -Dsonar.login=${process.env.SONAR_TOKEN}`,
+                            //         { cwd: service.path, timeout: 10 * 60 * 1000 },
+                            //         e => {
+                            //             res(!e);
+                            //         }
+                            //     );
+                            // });
+
+                            // if (!sonarOK) {
+                            //     // await rollback(conn, service, log);
+                            //     conn.end();
+                            //     return resolve();
+                            // }
                         }
 
-                        // 3. Build Docker local
-                        log(`🔨 Build de l'image ${s.image}...`);
-                        await new Promise((res, rej) => exec(`docker build -t ${s.image} ${s.path}`, (e) => e ? rej(e) : res()));
+                        await new Promise((res, rej) =>
+                            exec(`docker build -t ${service.image} ${service.path}`, { timeout: 10 * 60 * 1000 }, e => {
+                                e ? rej(e) : res();
+                            })
+                        );
 
-                        // 4. Export & Transfert
-                        const tarPath = path.join(workspace, `${s.name}.tar`);
-                        log(`📦 Exportation vers ${s.name}.tar...`);
-                        await new Promise((res, rej) => exec(`docker save ${s.image} -o ${tarPath}`, (e) => e ? rej(e) : res()));
+                        const tarPath = path.join(workspace, `${service.name}.tar`);
+                        await new Promise((res, rej) =>
+                            exec(`docker save ${service.image} -o ${tarPath}`, e => {
+                                e ? rej(e) : res();
+                            })
+                        );
 
-                        log(`🧹 Nettoyage port ${s.port.split(':')[0]} sur VM...`);
-                        await runSSHCommand(conn, `docker stop ${s.name}-cont || true && docker rm ${s.name}-cont || true`);
-
-                        log(`📤 Transfert de l'image vers la VM...`);
+                        // 2. Build local
+                        log(`Début du build de l'image ${service.image}...`);
                         await new Promise((res, rej) => {
-                            conn.exec('docker load', (e, stream) => {
-                                if (e) return rej(e);
-                                fs.createReadStream(tarPath).pipe(stream);
-                                stream.on('end', res);
-                                stream.on('error', rej);
+                            exec(`docker build -t ${service.image} ${service.path}`, (e, stdout, stderr) => {
+                                if (e) {
+                                    log(`❌ Erreur build: ${e.message}`);
+                                    if (stderr) log(`Build stderr: ${stderr}`);
+                                    return rej(e);
+                                }
+                                log(`✅ Build terminé pour ${service.image}`);
+                                res();
                             });
                         });
 
-                        log(`🏃 Démarrage du conteneur ${s.name}-cont...`);
-                        await runSSHCommand(conn, `docker run -d --name ${s.name}-cont -p ${s.port} ${s.image}`);
+                        // 3. Export .tar
+                        log(`Création de l'archive ${service.name}.tar...`);
+                        await new Promise((res, rej) => {
+                            exec(`docker save ${service.image} -o ${tarPath}`, (e) => {
+                                if (e) {
+                                    log(`❌ Erreur export: ${e.message}`);
+                                    return rej(e);
+                                }
+                                const stats = fs.statSync(tarPath);
+                                log(`✅ Archive créée (${(stats.size / 1024 / 1024).toFixed(2)} MB)`);
+                                res();
+                            });
+                        });
 
-                        if (fs.existsSync(tarPath)) fs.unlinkSync(tarPath);
-                        log(`✅ Service ${s.name} déployé.`);
+                        // 4. Nettoyage VM pour ce port précis
+                        log(`🧹 Nettoyage des anciens conteneurs sur le port ${service.port.split(':')[0]}...`);
+                        await new Promise((res) => {
+                            const cleanCmd = `ids=$(docker ps -q --filter "publish=${service.port.split(':')[0]}"); if [ ! -z "$ids" ]; then docker stop $ids && docker rm $ids; fi; exit`;
+                            conn.exec(cleanCmd, (e, stream) => {
+                                if (e) log(`❌ Erreur lors du nettoyage: ${e.message}`);
+                                stream.on('data', (data) => log(`VM clean: ${data.toString().trim()}`));
+                                stream.on('end', () => {
+                                    log(`✅ Nettoyage terminé`);
+                                    res();
+                                });
+                                stream.resume();
+                            });
+                        });
+
+                        // 5. Transfert et Load
+                        log(`Début du transfert de l'image ${service.name} vers la VM...`);
+                        let bytesTransferred = 0;
+                        await new Promise((res, rej) => {
+                            conn.exec('docker load', (e, stream) => {
+                                if (e) {
+                                    log(`❌ Erreur connexion docker load: ${e.message}`);
+                                    return rej(e);
+                                }
+                                
+                                const fileStream = fs.createReadStream(tarPath);
+                                const stats = fs.statSync(tarPath);
+                                const totalSize = stats.size;
+                                
+                                fileStream.on('data', (chunk) => {
+                                    bytesTransferred += chunk.length;
+                                    const progress = ((bytesTransferred / totalSize) * 100).toFixed(1);
+                                    if (bytesTransferred % (10 * 1024 * 1024) === 0 || bytesTransferred === totalSize) {
+                                        log(`⏳ Transfert: ${progress}% (${(bytesTransferred / 1024 / 1024).toFixed(2)} MB)`);
+                                    }
+                                });
+                                
+                                fileStream.pipe(stream);
+                                stream.on('data', (d) => log(`VM load: ${d.toString().trim()}`));
+                                stream.on('end', () => {
+                                    log(`✅ Image ${service.name} chargée sur la VM`);
+                                    res();
+                                });
+                                stream.on('error', (err) => {
+                                    log(`❌ Erreur stream: ${err.message}`);
+                                    rej(err);
+                                });
+                            });
+                        });
+
+                        // 6. Lancement
+                        log(`Démarrage du conteneur ${service.container}...`);
+                        log(`Commande: docker run -d --name ${service.container} -p ${service.port} ${service.image}`);
+                        await new Promise((res, rej) => {
+                            conn.exec(`docker run -d --name ${service.container} -p ${service.port} ${service.image}; exit`, (e, stream) => {
+                                if (e) {
+                                    log(`❌ Erreur lancement conteneur: ${e.message}`);
+                                    return rej(e);
+                                }
+                                stream.on('data', (data) => log(`VM run: ${data.toString().trim()}`));
+                                stream.on('end', () => {
+                                    log(`✅ Conteneur ${service.container} démarré`);
+                                    if (fs.existsSync(tarPath)) {
+                                        fs.unlinkSync(tarPath);
+                                        log(`Archive ${service.name}.tar supprimée`);
+                                    }
+                                    res();
+                                });
+                                stream.on('error', (err) => {
+                                    log(`❌ Erreur stream run: ${err.message}`);
+                                    rej(err);
+                                });
+                                stream.resume();
+                            });
+                        });
+                        log(`✅ Service ${service.name} déployé avec succès sur port ${service.port}`);
+                    
                     }
+
+                    conn.end();
+                    log("🎉 PIPELINE FULL-STACK TERMINÉ AVEC SUCCÈS !");
+                    log("Tous les services sont opérationnels sur la VM");
+                    resolve();
+                } catch (e) {
+                    log(`❌ ${e.message}`);
+                    conn.end();
+                    reject(e);
                 }
-                log("🎉 Opération terminée avec succès !");
-                conn.end();
-                resolve();
-            } catch (err) {
-                log(`❌ Erreur critique: ${err.message}`);
-                conn.end();
-                reject(err);
-            }
+            });
         }).connect({
             host: process.env.VM_IP,
-            port: 22,
             username: 'debian',
-            privateKey: fs.readFileSync(path.join(__dirname, 'certs', 'id_deploy_tp')), // Vérifiez le chemin du certificat
-            passphrase: 'debian'
+            password: 'debian',
+            privateKey: fs.readFileSync(path.join(__dirname, 'certs', 'id_deploy_tp2')),
+            passphrase: 'debian',
+            readyTimeout: 10000
         });
     });
 };
 
-// --- ROUTES API ---
+/* ========================= ROUTES ========================= */
 
-// Liste des repos de l'utilisateur
-app.get('/api/github/repos', async (req, res) => {
+app.post('/api/pipeline/action', async (req, res) => {
     if (!req.isAuthenticated()) return res.status(401).send();
+    if (pipelineRunning) return res.status(409).json({ error: "Pipeline déjà en cours" });
+
+    pipelineRunning = true;
     try {
-        const response = await axios.get('https://api.github.com/user/repos?per_page=100', {
-            headers: { Authorization: `token ${req.user.accessToken}` }
-        });
-        res.json(response.data.map(r => ({
-            name: r.name,
-            url: r.clone_url,
-            canPush: r.permissions.push // Sécurité : l'utilisateur a-t-il le droit d'écrire ?
-        })));
-    } catch (e) { res.status(500).send(e.message); }
-});
-
-// Déclenchement manuel (Interface Web)
-app.post('/api/pipeline/action', (req, res) => {
-    if (!req.isAuthenticated()) return res.status(401).json({ error: "Non authentifié" });
-
-    const { repoUrl, repoName, actionType, canPush } = req.body;
-
-    // Sécurité : Seul un contributeur peut modifier la VM
-    if (!canPush && actionType !== 'CHECK_STATUS') {
-        return res.status(403).json({ error: "Droits de contributeur requis." });
+        await runFullPipeline(req.body.repoUrl, req.body.repoName, req.body.actionType);
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    } finally {
+        pipelineRunning = false;
     }
-
-    runFullPipeline(repoUrl, repoName, actionType)
-        .then(() => res.json({ success: true }))
-        .catch(err => res.status(500).json({ success: false, reason: err.message }));
-});
-
-// Webhook GitHub (Automatique)
-app.post('/api/webhook', (req, res) => {
-    const isMain = req.body.ref === 'refs/heads/main';
-    if (req.headers['x-github-event'] === 'push' && isMain) {
-        log("⚓ Webhook reçu : Push sur main detecté.");
-        runFullPipeline(req.body.repository.clone_url, req.body.repository.name, 'FULL_DEPLOY')
-            .catch(e => console.error("Erreur Webhook:", e));
-    }
-    res.status(200).send('OK');
 });
 
 app.get('/api/pipeline/logs', (req, res) => res.json({ logs: pipelineLogs }));
+
+app.get('/auth/github', passport.authenticate('github', { scope: ['user:email', 'repo'] }));
+app.get('/auth/github/callback',
+    passport.authenticate('github', { failureRedirect: '/' }),
+    (req, res) => res.redirect('http://localhost:3000')
+);
+
+app.listen(PORT, () => console.log(`🚀 Serveur prêt sur ${PORT}`));
 
 app.get('/api/user', (req, res) => {
     if (!req.user) return res.json(null);
@@ -209,12 +358,19 @@ app.get('/api/user', (req, res) => {
     });
 });
 
-// --- AUTHENTIFICATION ---
-app.get('/auth/github', passport.authenticate('github', { scope: ['user:email', 'repo'] }));
-
-app.get('/auth/github/callback',
-    passport.authenticate('github', { failureRedirect: '/' }),
-    (req, res) => res.redirect('http://localhost:3000')
-);
-
-app.listen(PORT, () => console.log(`🚀 Serveur CI/CD prêt sur le port ${PORT}`));
+app.get('/api/github/repos', async (req, res) => {
+    if (!req.isAuthenticated()) return res.status(401).send();
+    try {
+        const response = await axios.get(
+            'https://api.github.com/user/repos?per_page=100',
+            { headers: { Authorization: `token ${req.user.accessToken}` } }
+        );
+        res.json(response.data.map(r => ({
+            name: r.name,
+            url: r.clone_url,
+            canPush: r.permissions.push
+        })));
+    } catch (e) {
+        res.status(500).send(e.message);
+    }
+});

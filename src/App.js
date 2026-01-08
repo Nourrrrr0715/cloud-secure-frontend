@@ -71,7 +71,6 @@ function App() {
             <div className="w-12 h-12 bg-blue-600 rounded-2xl flex items-center justify-center text-white font-black text-xl italic">CS</div>
             <div>
               <h1 className="text-xl font-bold leading-tight">Control Panel</h1>
-              <p className="text-slate-400 text-xs uppercase tracking-widest font-bold">Node: 192.168.20.128</p>
             </div>
           </div>
           <div className="flex items-center gap-4 mt-4 md:mt-0 bg-slate-50 p-2 pr-6 rounded-2xl border border-slate-100">
