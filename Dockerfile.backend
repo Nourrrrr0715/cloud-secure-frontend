@@ -4,7 +4,7 @@ FROM node:18-alpine
 WORKDIR /app
 
 # Installer git, openssh, docker et sshpass pour les opérations
-RUN apk add --no-cache git openssh-client docker-cli docker-compose sshpass
+RUN apk add --no-cache git openssh-client docker-cli docker-compose sshpass maven openjdk17
 
 # Copier les fichiers de dépendances
 COPY package*.json ./

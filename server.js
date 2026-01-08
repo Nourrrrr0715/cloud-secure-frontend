@@ -18,7 +18,7 @@ app.use(cors({
     origin: [
         'http://localhost:3000', 
         'http://127.0.0.1:3000', 
-        'http://192.168.20.128:3000',
+        'http://192.168.188.129:3000',
         'http://frontend:3000'
     ],
     credentials: true 
@@ -41,6 +41,20 @@ passport.use(new GitHubStrategy({
     clientSecret: process.env.GITHUB_CLIENT_SECRET,
     callbackURL: `http://localhost:${PORT}/auth/github/callback`
 }, (at, rt, profile, done) => done(null, profile)));
+
+
+const rollback = async (conn, service) => {
+    return new Promise((res) => {
+        const rollbackCmd = `
+            docker stop ${service.container} || true
+            docker rm ${service.container} || true
+            docker run -d --name ${service.container} -p ${service.port} ${service.image}:previous || true
+            exit
+        `;
+        conn.exec(rollbackCmd, () => res());
+    });
+};
+
 
 // --- pipeline logique métier ---
 const runFullPipeline = () => {
@@ -106,6 +120,77 @@ const runFullPipeline = () => {
                         const tarPath = path.join(workspace, `${service.name}.tar`);
                         log(`📁 Chemin de l'image : ${service.path}`);
                         log(`💾 Archive : ${tarPath}`);
+
+                        // === Tests unitaires + SonarQube (BACKEND SEULEMENT) ===
+                        if (service.name === 'backend') {
+                            log("🧪 Lancement des tests unitaires...");
+
+                            const testsOK = await new Promise((res) => {
+                                exec(
+                                    'mvn clean test',
+                                    { cwd: service.path },
+                                    (e, stdout, stderr) => {
+
+                                        if (e) {
+                                            log("❌ Échec des tests unitaires"); // seulement message essentiel
+                                            return res(false);
+                                        }
+
+                                        log("✅ Tests unitaires réussis"); // seulement message essentiel
+                                        res(true);
+                                    }
+                                );
+                            });
+
+                            if (!testsOK) {
+                                log("🔁 Déclenchement du rollback...");
+                                await rollback(conn, service);
+                                log("⛔ Pipeline arrêté (tests KO)");
+                                conn.end();
+                                return; // ⛔ STOP TOTAL DU PIPELINE
+                            }
+
+                            log("📊 Lancement de l'analyse SonarQube...");
+
+                            const sonarOK = await new Promise((res) => {
+                                exec(
+                                    'mvn clean verify sonar:sonar ' +
+                                    `"-Dsonar.projectKey=${process.env.SONAR_PROJECT_KEY}" ` +
+                                    `"-Dsonar.host.url=${process.env.SONAR_HOST_URL}" ` +
+                                    `"-Dsonar.login=${process.env.SONAR_TOKEN}"`,
+                                    {
+                                        cwd: service.path,
+                                        env: {
+                                        ...process.env,
+                                        SONAR_HOST_URL: process.env.SONAR_HOST_URL,
+                                        SONAR_TOKEN: process.env.SONAR_TOKEN,
+                                        SONAR_PROJECT_KEY: process.env.SONAR_PROJECT_KEY
+                                        }
+                                    },
+                                    (e, stdout, stderr) => {
+
+                                        if (e) {
+                                            if (stdout) log(stdout); 
+                                            if (stderr) log(stderr);
+
+                                            log("❌ Échec analyse SonarQube");
+                                            return res(false);
+                                        }
+
+                                        log("✅ Analyse SonarQube terminée");
+                                        res(true);
+                                    }
+                                );
+                            });
+
+                            if (!sonarOK) {
+                                log("🔁 Déclenchement du rollback...");
+                                await rollback(conn, service);
+                                log("⛔ Pipeline arrêté (Sonar KO)");
+                                conn.end();
+                                return;
+                            }
+                        }
 
                         // 2. Build local
                         log(`🔨 Début du build de l'image ${service.image}...`);
@@ -241,9 +326,10 @@ app.post('/api/pipeline/deploy', (req, res) => {
     runFullPipeline()
         .then(() => res.json({ success: true }))
         .catch(err => {
-            pipelineLogs.push(`❌ ERREUR: ${err}`);
-            res.status(500).json({ success: false, error: err });
+            pipelineLogs.push(`❌ PIPELINE ARRÊTÉ: ${err}`);
+            res.json({ success: false, reason: err });
         });
+
 });
 
 app.post('/api/webhook', (req, res) => {
