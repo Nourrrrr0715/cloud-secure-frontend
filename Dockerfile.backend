@@ -1,0 +1,28 @@
+# Dockerfile pour le backend Express
+FROM node:18-alpine
+
+WORKDIR /app
+
+# Installer git, openssh, docker et sshpass pour les opérations
+RUN apk add --no-cache git openssh-client docker-cli docker-compose sshpass
+
+# Copier les fichiers de dépendances
+COPY package*.json ./
+
+# Installer uniquement les dépendances de production
+RUN npm ci --only=production
+
+# Copier le serveur
+COPY server.js ./
+
+# Créer le dossier workspace et .ssh avec les bonnes permissions
+RUN mkdir -p /app/workspace /root/.ssh && chmod 700 /root/.ssh
+
+# Exposer le port du serveur backend
+EXPOSE 5001
+
+# Variable d'environnement pour le port
+ENV PORT=5001
+
+# Démarrer le serveur backend
+CMD ["node", "server.js"]

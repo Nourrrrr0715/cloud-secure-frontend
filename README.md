@@ -1,70 +1,112 @@
-# Getting Started with Create React App
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+# 🚀 CloudSecure CI/CD : Pipeline d'Images Immuables
 
-## Available Scripts
+[![Status](https://img.shields.io/badge/Status-Production--Ready-success?style=for-the-badge)]()
+[![Docker](https://img.shields.io/badge/Docker-Enabled-blue?style=for-the-badge&logo=docker)]()
+[![SSH](https://img.shields.io/badge/SSH-Secure--Tunnel-lightgrey?style=for-the-badge&logo=ssh)]()
 
-In the project directory, you can run:
+Ce projet implémente une infrastructure **CI/CD automatisée** permettant le déploiement de micro-services (Frontend & Backend) depuis un poste de contrôle vers une **VM Debian 12** via un transfert d'artefacts (Images Docker).
 
-### `npm start`
+---
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+## 🏗️ Architecture du Pipeline
 
-The page will reload when you make changes.\
-You may also see any lint errors in the console.
+Le pipeline ne repose pas sur un simple `git pull` distant (sujet aux dérives), mais sur la création d'images immuables sur le nœud de build.
 
-### `npm test`
+1.  **Déclenchement** : Webhook GitHub (Auto) ou Dashboard React (Manuel).
+2.  **Build** : Compilation des Dockerfiles sur le poste local.
+3.  **Export** : Sérialisation des images en archives `.tar`.
+4.  **Transfert** : Injection directe dans le moteur Docker de la VM via **Stream SSH**.
+5.  **Déploiement** : Nettoyage des ports et instanciation des nouveaux conteneurs.
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+---
 
-### `npm run build`
+## 🛠️ Pré-requis
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+* **Docker Desktop** (lancé sur le poste hôte)
+* **VMWare** avec la VM Debian configurée
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
+---
 
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+## 🚀 Installation & Lancement
 
-### `npm run eject`
+### 1. Configuration de la VM
+Assurez-vous d'installer la VM avec le lien de téléchargement (fichier ovf) :
+```bash
+# Se connecter à la VM
+id = debian
+mdp = debian
+# récupérer l'adresse ip de la machine (récupérer celle d'ens33)
+ip a
+```
+Image d'exemple :
+![img.png](img.png)
 
-**Note: this is a one-way operation. Once you `eject`, you can't go back!**
+## 2\. Configuration du projet CI/CD
 
-If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
+### 2.1. Création de l’OAuth GitHub (CI/CD)
 
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
+GitHub → Settings → Developer settings → OAuth Apps → New OAuth App
 
-You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
+- Homepage URL : http://localhost:3000/
+- Callback URL : http://localhost:5001/auth/github/callback
 
-## Learn More
+Récupérer :
+- Client ID
+- Client Secret
 
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
+### 2.2. Variables d’environnement
 
-To learn React, check out the [React documentation](https://reactjs.org/).
+Créer un fichier `.env` à la racine du projet CI/CD :
 
-### Code Splitting
+```
+GITHUB_CLIENT_ID=votre_id_OAuth
+GITHUB_CLIENT_SECRET=votre_secret_OAuth
+SESSION_SECRET=votre_secret_aleatoire
+VM_IP=ip_de_la_VM
+```
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
+### 2.3\. Lancement
 
-### Analyzing the Bundle Size
+```Bash
+# lancer le projet
+docker compose -up -d
+```
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
+* * * * *
 
-### Making a Progressive Web App
+🔒 Sécurité & Portabilité
+-------------------------
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
+> 🚨 IMPORTANT 🚨
+>
+> Pour faciliter l'évaluation, les clés SSH sont incluses dans le dossier /.ssh.
+>
+> Note technique : Dans un environnement réel, ces clés seraient injectées via un Vault (Secrets Manager).
 
-### Advanced Configuration
+* * * * *
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
+📊 Fonctionnalités Clés
+-----------------------
 
-### Deployment
+| **Fonctionnalité** | **Description**                                                         |
+| --- |-------------------------------------------------------------------------|
+| **Full-Stack Build** | Build parallèle du Frontend (3000) et du Backend (5001).                |
+| **Real-time Logs** | Streaming des flux de la VM vers l'interface React.               |
+| **Port Cleaning** | Détection et arrêt automatique des conteneurs occupant les ports cibles. |
+| **Immuabilité** | Transfert d'images `.tar` pour garantir la parité entre Dev et Prod.    |
+| **Webhooks** | Intégration Ngrok/GitHub pour le déploiement continu au `git push`.     |
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
+* * * * *
 
-### `npm run build` fails to minify
+👨‍💻 Structure du Projet
+-------------------------
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
+```Plaintext
+.
+├── .ssh/                # Clés SSH de déploiement (Portabilité)
+├── src/                 # Interface Dashboard (React)
+├── workspace/           # Espace temporaire de build (Images .tar)
+├── server.js            # Orchestrateur du pipeline (Node/SSH2)
+└── .env                 # Configuration sensible
+```

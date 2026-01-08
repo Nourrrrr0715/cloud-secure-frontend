@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  # Service Frontend React (Développement)
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - REACT_APP_API_URL=http://localhost:5001
+    volumes:
+      # Montage pour le hot-reload en développement
+      - ./src:/app/src
+      - ./public:/app/public
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+
+  # Service Backend Express
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    ports:
+      - "5001:5001"
+    environment:
+      - NODE_ENV=production
+      - SESSION_SECRET=${SESSION_SECRET}
+      - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID}
+      - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET}
+      - VM_IP=${VM_IP}
+      - SSH_KEY=${SSH_KEY}
+    volumes:
+      # Monter le socket Docker pour permettre au backend d'utiliser Docker
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Monter le dossier workspace
+      - ./workspace:/app/workspace
+      # Monter la clé SSH privée avec passphrase
+      - ./.ssh/id_deploy_tp:/tmp/id_deploy_tp:ro
+    restart: unless-stopped
+    command: sh -c "cp /tmp/id_deploy_tp /root/.ssh/id_deploy_tp && chmod 600 /root/.ssh/id_deploy_tp && node server.js"

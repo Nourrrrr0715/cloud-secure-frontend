@@ -13,9 +13,16 @@ const app = express();
 const PORT = 5001;
 let pipelineLogs = [];
 
-const SSH_PRIVATE_KEY_PATH = path.join(__dirname, 'certs', 'id_deploy_tp2');
-
-app.use(cors({ origin: 'http://localhost:3000', credentials: true }));
+// Configuration CORS pour accepter les requêtes depuis le navigateur et le conteneur frontend
+app.use(cors({ 
+    origin: [
+        'http://localhost:3000', 
+        'http://127.0.0.1:3000', 
+        'http://192.168.20.128:3000',
+        'http://frontend:3000'
+    ],
+    credentials: true 
+}));
 app.use(express.json());
 app.use(session({
     secret: process.env.SESSION_SECRET || 'secret_temporaire',
@@ -54,7 +61,7 @@ const runFullPipeline = () => {
                 name: 'frontend',
                 image: 'app-pcs-front:latest',
                 container: 'app-pcs-front-cont',
-                port: '3000:3000',
+                port: '3000:80',  // Nginx écoute sur 80 dans le conteneur
                 path: path.join(projectPath, 'frontend')
             },
             {
@@ -67,80 +74,155 @@ const runFullPipeline = () => {
         ];
 
         log("🚀 Démarrage du Pipeline Full-Stack (Front + Back)...");
+        log(`📂 Chemin du projet : ${projectPath}`);
 
         // 1. Git Pull
         const fetchCmd = fs.existsSync(projectPath) ? `git -C ${projectPath} pull` : `git clone https://github.com/ML-Laurane/Appli-PCS.git ${projectPath}`;
+        log(`🔧 Commande Git : ${fetchCmd}`);
+        log("⏳ Récupération du code source...");
 
-        exec(fetchCmd, async (err) => {
-            if (err) return reject("Erreur Git: " + err.message);
+        exec(fetchCmd, async (err, stdout, stderr) => {
+            if (err) {
+                log(`❌ Erreur Git: ${err.message}`);
+                if (stderr) log(`Git stderr: ${stderr}`);
+                return reject("Erreur Git: " + err.message);
+            }
+            if (stdout) log(`Git output: ${stdout.trim()}`);
             log("✅ Code source mis à jour.");
 
             try {
+                log(`🔑 Tentative de connexion SSH à ${process.env.VM_IP || '192.168.20.128'}:22...`);
                 const conn = new Client();
+                
+                conn.on('error', (err) => {
+                    log(`❌ Erreur SSH: ${err.message}`);
+                });
+
                 conn.on('ready', async () => {
                     log("📡 Connexion SSH établie avec la VM.");
 
                     for (const service of services) {
-                        log(`--- Service : ${service.name.toUpperCase()} ---`);
+                        log(`\n--- 🚢 Service : ${service.name.toUpperCase()} ---`);
                         const tarPath = path.join(workspace, `${service.name}.tar`);
+                        log(`📁 Chemin de l'image : ${service.path}`);
+                        log(`💾 Archive : ${tarPath}`);
 
                         // 2. Build local
-                        log(`🔨 Build de l'image ${service.image}...`);
+                        log(`🔨 Début du build de l'image ${service.image}...`);
                         await new Promise((res, rej) => {
-                            exec(`docker build -t ${service.image} ${service.path}`, (e) => e ? rej(e) : res());
+                            exec(`docker build -t ${service.image} ${service.path}`, (e, stdout, stderr) => {
+                                if (e) {
+                                    log(`❌ Erreur build: ${e.message}`);
+                                    if (stderr) log(`Build stderr: ${stderr}`);
+                                    return rej(e);
+                                }
+                                log(`✅ Build terminé pour ${service.image}`);
+                                res();
+                            });
                         });
 
                         // 3. Export .tar
                         log(`📦 Création de l'archive ${service.name}.tar...`);
                         await new Promise((res, rej) => {
-                            exec(`docker save ${service.image} -o ${tarPath}`, (e) => e ? rej(e) : res());
+                            exec(`docker save ${service.image} -o ${tarPath}`, (e) => {
+                                if (e) {
+                                    log(`❌ Erreur export: ${e.message}`);
+                                    return rej(e);
+                                }
+                                const stats = fs.statSync(tarPath);
+                                log(`✅ Archive créée (${(stats.size / 1024 / 1024).toFixed(2)} MB)`);
+                                res();
+                            });
                         });
 
                         // 4. Nettoyage VM pour ce port précis
-                        log(`🧹 Arrêt de l'ancien conteneur sur le port ${service.port.split(':')[0]}...`);
+                        log(`🧹 Nettoyage des anciens conteneurs sur le port ${service.port.split(':')[0]}...`);
                         await new Promise((res) => {
                             const cleanCmd = `ids=$(docker ps -q --filter "publish=${service.port.split(':')[0]}"); if [ ! -z "$ids" ]; then docker stop $ids && docker rm $ids; fi; exit`;
-                            conn.exec(cleanCmd, { pty: true }, (e, stream) => {
-                                stream.on('end', () => res());
-                                stream.resume();
-                            });
-                        });
-
-                        // 5. Transfert et Load
-                        log(`📤 Transfert de l'image ${service.name} vers la VM...`);
-                        await new Promise((res, rej) => {
-                            conn.exec('docker load', (e, stream) => {
-                                if (e) return rej(e);
-                                fs.createReadStream(tarPath).pipe(stream);
-                                stream.on('data', (d) => log(`VM: ${d.toString().trim()}`));
-                                stream.on('end', () => res());
-                            });
-                        });
-
-                        // 6. Lancement
-                        log(`🏃 Lancement du conteneur ${service.container}...`);
-                        await new Promise((res) => {
-                            conn.exec(`docker run -d --name ${service.container} -p ${service.port} ${service.image}; exit`, { pty: true }, (e, stream) => {
+                            conn.exec(cleanCmd, (e, stream) => {
+                                if (e) log(`⚠️ Erreur lors du nettoyage: ${e.message}`);
+                                stream.on('data', (data) => log(`VM clean: ${data.toString().trim()}`));
                                 stream.on('end', () => {
-                                    if (fs.existsSync(tarPath)) fs.unlinkSync(tarPath);
+                                    log(`✅ Nettoyage terminé`);
                                     res();
                                 });
                                 stream.resume();
                             });
                         });
-                        log(`✅ Service ${service.name} déployé.`);
+
+                        // 5. Transfert et Load
+                        log(`📤 Début du transfert de l'image ${service.name} vers la VM...`);
+                        let bytesTransferred = 0;
+                        await new Promise((res, rej) => {
+                            conn.exec('docker load', (e, stream) => {
+                                if (e) {
+                                    log(`❌ Erreur connexion docker load: ${e.message}`);
+                                    return rej(e);
+                                }
+                                
+                                const fileStream = fs.createReadStream(tarPath);
+                                const stats = fs.statSync(tarPath);
+                                const totalSize = stats.size;
+                                
+                                fileStream.on('data', (chunk) => {
+                                    bytesTransferred += chunk.length;
+                                    const progress = ((bytesTransferred / totalSize) * 100).toFixed(1);
+                                    if (bytesTransferred % (10 * 1024 * 1024) === 0 || bytesTransferred === totalSize) {
+                                        log(`⏳ Transfert: ${progress}% (${(bytesTransferred / 1024 / 1024).toFixed(2)} MB)`);
+                                    }
+                                });
+                                
+                                fileStream.pipe(stream);
+                                stream.on('data', (d) => log(`VM load: ${d.toString().trim()}`));
+                                stream.on('end', () => {
+                                    log(`✅ Image ${service.name} chargée sur la VM`);
+                                    res();
+                                });
+                                stream.on('error', (err) => {
+                                    log(`❌ Erreur stream: ${err.message}`);
+                                    rej(err);
+                                });
+                            });
+                        });
+
+                        // 6. Lancement
+                        log(`🏃 Démarrage du conteneur ${service.container}...`);
+                        log(`🔧 Commande: docker run -d --name ${service.container} -p ${service.port} ${service.image}`);
+                        await new Promise((res, rej) => {
+                            conn.exec(`docker run -d --name ${service.container} -p ${service.port} ${service.image}; exit`, (e, stream) => {
+                                if (e) {
+                                    log(`❌ Erreur lancement conteneur: ${e.message}`);
+                                    return rej(e);
+                                }
+                                stream.on('data', (data) => log(`VM run: ${data.toString().trim()}`));
+                                stream.on('end', () => {
+                                    log(`✅ Conteneur ${service.container} démarré`);
+                                    if (fs.existsSync(tarPath)) {
+                                        fs.unlinkSync(tarPath);
+                                        log(`🗑️ Archive ${service.name}.tar supprimée`);
+                                    }
+                                    res();
+                                });
+                                stream.on('error', (err) => {
+                                    log(`❌ Erreur stream run: ${err.message}`);
+                                    rej(err);
+                                });
+                                stream.resume();
+                            });
+                        });
+                        log(`✅ Service ${service.name} déployé avec succès sur port ${service.port}`);
                     }
 
                     conn.end();
-                    log("✨ PIPELINE FULL-STACK TERMINÉ AVEC SUCCÈS !");
+                    log("🎉 PIPELINE FULL-STACK TERMINÉ AVEC SUCCÈS !");
+                    log("📊 Tous les services sont opérationnels sur la VM");
                     resolve();
                 }).connect({
-                    host: process.env.VM_HOST,
-                    port: parseInt(process.env.VM_PORT),
+                    host: process.env.VM_IP || '192.168.20.128',
+                    port: 22,
                     username: 'debian',
-                    privateKey: fs.readFileSync(SSH_PRIVATE_KEY_PATH),
-                    passphrase: 'debian',
-                    readyTimeout: 30000
+                    privateKey: fs.readFileSync('/root/.ssh/id_deploy_tp'),
+                    passphrase: 'debian'
                 });
 
             } catch (error) {
