@@ -374,3 +374,71 @@ app.get('/api/github/repos', async (req, res) => {
         res.status(500).send(e.message);
     }
 });
+
+
+/* ========================= WEBHOOK GITHUB ========================= */
+
+app.post('/api/webhook', async (req, res) => {
+    // DEBUG: log headers et body
+    console.log('--- Webhook reçu ---');
+    console.log('Headers:', JSON.stringify(req.headers, null, 2));
+    console.log('Body:', JSON.stringify(req.body, null, 2));
+
+    // 1. Vérifie que c'est bien un événement "push" sur la branche "main"
+    const githubEvent = req.headers['x-github-event'];
+    const isMainBranch = req.body.ref === 'refs/heads/main';
+
+    if (githubEvent === 'push' && isMainBranch) {
+        try {
+            const repoUrl = req.body.repository?.clone_url;
+            const repoName = req.body.repository?.name;
+
+            console.log(`[Webhook] Push détecté sur ${repoName}. Lancement du pipeline...`);
+
+            if (!repoUrl || !repoName) {
+                console.error('[Webhook Error] repoUrl ou repoName manquant');
+                return res.status(400).send('repoUrl ou repoName manquant');
+            }
+
+            // On lance le pipeline en arrière-plan (sans attendre le await pour répondre à GitHub rapidement)
+            runFullPipeline(repoUrl, repoName, 'FULL_DEPLOY').catch(err => {
+                console.error(`[Webhook Error] ${err.message}`);
+            });
+
+            return res.status(200).send('Pipeline auto-déployé');
+        } catch (err) {
+            console.error('[Webhook Exception]', err);
+            return res.status(500).send('Erreur interne webhook');
+        }
+    }
+
+    console.log('[Webhook] Événement ignoré:', githubEvent, req.body.ref);
+    res.status(200).send('Événement ignoré');
+});
+
+
+// app.use(express.json({ limit: '10mb' }));
+// app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// app.post('/api/webhook', (req, res) => {
+//     try {
+//             if (
+//         req.headers['x-github-event'] === 'push' &&
+//         req.body?.ref === 'refs/heads/main' &&
+//         req.body?.repository
+//     )
+//     {
+//             const repoUrl = req.body.repository.clone_url;
+//             const repoName = req.body.repository.name;
+
+//             runFullPipeline(repoUrl, repoName, 'FULL_DEPLOY')
+//                 .catch(err => console.error('Pipeline error:', err));
+//         }
+
+//         res.status(200).send('OK');
+//     } catch (e) {
+//         console.error(e);
+//         res.status(500).send('Webhook error');
+//     }
+// });
+
