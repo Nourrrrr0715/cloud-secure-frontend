@@ -66,15 +66,25 @@ const runSSHCommand = (conn, cmd, log) =>
         });
     });
 
-// const rollback = async (conn, service, log) => {
-//     log(`🔁 Rollback du service ${service.container}`);
-//     await runSSHCommand(
-//         conn,
-//         `docker stop ${service.container} || true && docker rm ${service.container} || true`,
-//         log
-//     );
-// };
+/* ========================= LOGIQUE DE ROLLBACK GIT ========================= */
 
+const getCurrentCommit = (projectPath) => {
+    return new Promise((res) => {
+        exec('git rev-parse HEAD', { cwd: projectPath }, (e, stdout) => {
+            res(e ? null : stdout.trim());
+        });
+    });
+};
+
+const gitRollback = (projectPath, commitHash, log) => {
+    return new Promise((res) => {
+        log(`⏪ Retour au commit stable : ${commitHash}`);
+        exec(`git reset --hard ${commitHash}`, { cwd: projectPath }, (e) => {
+            if (e) log(`❌ Erreur critique Rollback : ${e.message}`);
+            res(!e);
+        });
+    });
+};
 /* ========================= PIPELINE ========================= */
 
 const runFullPipeline = (repoUrl, repoName, actionType) => {
@@ -116,6 +126,8 @@ const runFullPipeline = (repoUrl, repoName, actionType) => {
                 ? `git -C ${projectPath} pull`
                 : `git clone ${repoUrl} ${projectPath}`;
 
+            const lastStableCommit = await getCurrentCommit(projectPath);
+
             exec(fetchCmd, { timeout: 2 * 60 * 1000 }, async (err) => {
                 if (err) {
                     log(`❌ Git error: ${err.message}`);
@@ -141,8 +153,11 @@ const runFullPipeline = (repoUrl, repoName, actionType) => {
                 ];
 
                 try {
+                    // ========== PHASE 1 : VÉRIFICATION DE TOUS LES SERVICES ==========
+                    log("🔍 PHASE 1 : Vérification et build de tous les services...");
+                    
                     for (const service of services) {
-                        log(`🚢 Service ${service.name.toUpperCase()}`);
+                        log(`\n📦 Vérification du service ${service.name.toUpperCase()}`);
 
                         if (service.name === 'backend') {
                             log("Tests unitaires...");
@@ -156,49 +171,18 @@ const runFullPipeline = (repoUrl, repoName, actionType) => {
                             });
 
                             if (!testsOK) {
-                                // await rollback(conn, service, log);
+                                log("❌ Échec des tests. Initialisation du Rollback Git...");
+                                await gitRollback(projectPath, lastStableCommit, log);
+                                
                                 conn.end();
                                 return resolve();
                             }
-
-                            // log("📊 SonarQube...");
-                            // const sonarOK = await new Promise(res => {
-                            //     exec(
-                            //         `mvn verify sonar:sonar \
-                            //         -Dsonar.projectKey=${process.env.SONAR_PROJECT_KEY} \
-                            //         -Dsonar.host.url=${process.env.SONAR_HOST_URL} \
-                            //         -Dsonar.login=${process.env.SONAR_TOKEN}`,
-                            //         { cwd: service.path, timeout: 10 * 60 * 1000 },
-                            //         e => {
-                            //             res(!e);
-                            //         }
-                            //     );
-                            // });
-
-                            // if (!sonarOK) {
-                            //     // await rollback(conn, service, log);
-                            //     conn.end();
-                            //     return resolve();
-                            // }
                         }
 
-                        await new Promise((res, rej) =>
-                            exec(`docker build -t ${service.image} ${service.path}`, { timeout: 10 * 60 * 1000 }, e => {
-                                e ? rej(e) : res();
-                            })
-                        );
-
-                        const tarPath = path.join(workspace, `${service.name}.tar`);
-                        await new Promise((res, rej) =>
-                            exec(`docker save ${service.image} -o ${tarPath}`, e => {
-                                e ? rej(e) : res();
-                            })
-                        );
-
-                        // 2. Build local
+                        // Build local
                         log(`Début du build de l'image ${service.image}...`);
                         await new Promise((res, rej) => {
-                            exec(`docker build -t ${service.image} ${service.path}`, (e, stdout, stderr) => {
+                            exec(`docker build -t ${service.image} ${service.path}`, { timeout: 10 * 60 * 1000 }, (e, stdout, stderr) => {
                                 if (e) {
                                     log(`❌ Erreur build: ${e.message}`);
                                     if (stderr) log(`Build stderr: ${stderr}`);
@@ -209,7 +193,8 @@ const runFullPipeline = (repoUrl, repoName, actionType) => {
                             });
                         });
 
-                        // 3. Export .tar
+                        // Export .tar
+                        const tarPath = path.join(workspace, `${service.name}.tar`);
                         log(`Création de l'archive ${service.name}.tar...`);
                         await new Promise((res, rej) => {
                             exec(`docker save ${service.image} -o ${tarPath}`, (e) => {
@@ -222,8 +207,17 @@ const runFullPipeline = (repoUrl, repoName, actionType) => {
                                 res();
                             });
                         });
+                    }
 
-                        // 4. Nettoyage VM pour ce port précis
+                    log("\n✅ Tous les services ont été vérifiés avec succès !");
+                    log("🚀 PHASE 2 : Déploiement sur la VM...\n");
+
+                    // ========== PHASE 2 : DÉPLOIEMENT SUR LA VM ==========
+                    for (const service of services) {
+                        log(`\n🚢 Déploiement du service ${service.name.toUpperCase()}`);
+                        const tarPath = path.join(workspace, `${service.name}.tar`);
+
+                        // Nettoyage VM pour ce port précis
                         log(`🧹 Nettoyage des anciens conteneurs sur le port ${service.port.split(':')[0]}...`);
                         await new Promise((res) => {
                             const cleanCmd = `ids=$(docker ps -q --filter "publish=${service.port.split(':')[0]}"); if [ ! -z "$ids" ]; then docker stop $ids && docker rm $ids; fi; exit`;
@@ -238,7 +232,7 @@ const runFullPipeline = (repoUrl, repoName, actionType) => {
                             });
                         });
 
-                        // 5. Transfert et Load
+                        // Transfert et Load
                         log(`Début du transfert de l'image ${service.name} vers la VM...`);
                         let bytesTransferred = 0;
                         await new Promise((res, rej) => {
@@ -273,7 +267,7 @@ const runFullPipeline = (repoUrl, repoName, actionType) => {
                             });
                         });
 
-                        // 6. Lancement
+                        // Lancement
                         log(`Démarrage du conteneur ${service.container}...`);
                         log(`Commande: docker run -d --name ${service.container} -p ${service.port} ${service.image}`);
                         await new Promise((res, rej) => {
@@ -299,7 +293,6 @@ const runFullPipeline = (repoUrl, repoName, actionType) => {
                             });
                         });
                         log(`✅ Service ${service.name} déployé avec succès sur port ${service.port}`);
-                    
                     }
 
                     conn.end();
