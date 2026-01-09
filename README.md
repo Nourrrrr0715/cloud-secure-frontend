@@ -138,7 +138,5 @@ docker compose -up -d
 └── .env                 # Configuration sensible
 ```
 
-Sonarqube details :
-SONAR_HOST_URL=http://sonarqube:9000
-SONAR_TOKEN=sqp_97b878cd2abbeff483435bcb0dcadb0e5b3f89be
-SONAR_PROJECT_KEY=projet-pcs-backend
+
+
