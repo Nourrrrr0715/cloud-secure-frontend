@@ -409,29 +409,3 @@ app.post('/api/webhook', async (req, res) => {
     res.status(200).send('Événement ignoré');
 });
 
-
-// app.use(express.json({ limit: '10mb' }));
-// app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-
-// app.post('/api/webhook', (req, res) => {
-//     try {
-//             if (
-//         req.headers['x-github-event'] === 'push' &&
-//         req.body?.ref === 'refs/heads/main' &&
-//         req.body?.repository
-//     )
-//     {
-//             const repoUrl = req.body.repository.clone_url;
-//             const repoName = req.body.repository.name;
-
-//             runFullPipeline(repoUrl, repoName, 'FULL_DEPLOY')
-//                 .catch(err => console.error('Pipeline error:', err));
-//         }
-
-//         res.status(200).send('OK');
-//     } catch (e) {
-//         console.error(e);
-//         res.status(500).send('Webhook error');
-//     }
-// });
-

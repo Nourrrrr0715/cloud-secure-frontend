@@ -1,70 +1,144 @@
-# Getting Started with Create React App
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+# 🚀 CloudSecure CI/CD : Pipeline d'Images Immuables
 
-## Available Scripts
+[![Status](https://img.shields.io/badge/Status-Production--Ready-success?style=for-the-badge)]()
+[![Docker](https://img.shields.io/badge/Docker-Enabled-blue?style=for-the-badge&logo=docker)]()
+[![SSH](https://img.shields.io/badge/SSH-Secure--Tunnel-lightgrey?style=for-the-badge&logo=ssh)]()
 
-In the project directory, you can run:
+Ce projet implémente une infrastructure **CI/CD automatisée** permettant le déploiement de micro-services (Frontend & Backend) depuis un poste de contrôle vers une **VM Debian 12** via un transfert d'artefacts (Images Docker).
 
-### `npm start`
+---
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+## 🏗️ Architecture du Pipeline
 
-The page will reload when you make changes.\
-You may also see any lint errors in the console.
+Le pipeline ne repose pas sur un simple `git pull` distant (sujet aux dérives), mais sur la création d'images immuables sur le nœud de build.
 
-### `npm test`
+1.  **Déclenchement** : Webhook GitHub (Auto) ou Dashboard React (Manuel).
+2.  **Build** : Compilation des Dockerfiles sur le poste local.
+3.  **Export** : Sérialisation des images en archives `.tar`.
+4.  **Transfert** : Injection directe dans le moteur Docker de la VM via **Stream SSH**.
+5.  **Déploiement** : Nettoyage des ports et instanciation des nouveaux conteneurs.
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+---
 
-### `npm run build`
+## 🛠️ Pré-requis
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+* **Docker Desktop** (lancé sur le poste hôte)
+* **VMWare** avec la VM Debian configurée
+* **NGrok** (permettre la connexion webhook) : https://ngrok.com/download/windows
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
+---
 
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+## 🚀 Installation & Lancement
 
-### `npm run eject`
+## 1. Configuration de la VM
+Assurez-vous d'installer la VM avec le lien de téléchargement (fichier ovf) :
 
-**Note: this is a one-way operation. Once you `eject`, you can't go back!**
+1. Se connecter à la VM
+```Plaintext
+id = debian
+mdp = debian
+```
+2. Récupérer l'adresse ip de la machine (récupérer celle d'ens33)
+```Plaintext
+ip a
+```
 
-If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
+Image d'exemple :
+![img.png](img.png)
 
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
+## 2\. Configuration du projet CI/CD
 
-You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
+### 2.1. WebHook
 
-## Learn More
+Le problème est que le projet tourne sur localhost, donc GitHub (sur internet) ne peut pas le voir.
+Pour palier cela, on utilise Ngrok pour créer un tunnel temporaire qui donne une URL publique au projet local.
 
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
+Pour créer le lien webhook entre le projet CI/CD et le dépôt github :
 
-To learn React, check out the [React documentation](https://reactjs.org/).
+1. Télécharger Ngrok et l'installer.
+2. Dans un terminal, lancer :
+```Plaintext
+ngrok http 5001
+```
+3. Copier l'URL que Ngrok va générer. (ex : https://triangled-bert-vapidly.ngrok-free.dev)
+4. Sur le dépôt github métier, aller dans Settings > WebHooks > Add Webhooks
+5. Payload URL : Coller l'URL Ngrok et ajouter /api/webhook à la fin. (ex : https://triangled-bert-vapidly.ngrok-free.dev/api/webhook)
+6. Content type : Choisir application/json. 
+7. Laisser le reste par défaut et cliquer sur Add webhook.
 
-### Code Splitting
+### 2.2. Création de l’OAuth GitHub (CI/CD)
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
+1. Afin de créer une OAuth sur github, allez sur :
 
-### Analyzing the Bundle Size
+GitHub → Settings → Developer settings → OAuth Apps → New OAuth App
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
+2. Remplir les champs suivant :
 
-### Making a Progressive Web App
+- Homepage URL : http://localhost:3000/
+- Callback URL : http://localhost:5001/auth/github/callback
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
+3. Récupérer :
+- Client ID
+- Client Secret
 
-### Advanced Configuration
+### 2.3. Variables d’environnement
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
+Créer un fichier `.env` à la racine du projet CI/CD et complétez les champs suivant :
 
-### Deployment
+```Plaintext
+GITHUB_CLIENT_ID=votre_id_OAuth
+GITHUB_CLIENT_SECRET=votre_secret_OAuth
+SESSION_SECRET=votre_secret_aleatoire
+VM_IP=ip_de_la_VM
+```
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
+### 2.4. Lancement
 
-### `npm run build` fails to minify
+```Bash
+# lancer le projet
+docker compose -up -d
+```
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
+* * * * *
+
+🔒 Sécurité & Portabilité
+-------------------------
+
+> 🚨 IMPORTANT 🚨
+>
+> Pour faciliter l'évaluation, les clés SSH sont incluses dans le dossier /.ssh.
+>
+> Note technique : Dans un environnement réel, ces clés seraient injectées via un Vault (Secrets Manager).
+
+* * * * *
+
+📊 Fonctionnalités Clés
+-----------------------
+
+| **Fonctionnalité** | **Description**                                                         |
+| --- |-------------------------------------------------------------------------|
+| **Full-Stack Build** | Build parallèle du Frontend (3000) et du Backend (5001).                |
+| **Real-time Logs** | Streaming des flux de la VM vers l'interface React.               |
+| **Port Cleaning** | Détection et arrêt automatique des conteneurs occupant les ports cibles. |
+| **Immuabilité** | Transfert d'images `.tar` pour garantir la parité entre Dev et Prod.    |
+| **Webhooks** | Intégration Ngrok/GitHub pour le déploiement continu au `git push`.     |
+
+* * * * *
+
+👨‍💻 Structure du Projet
+-------------------------
+
+```Plaintext
+.
+├── .ssh/                # Clés SSH de déploiement (Portabilité)
+├── src/                 # Interface Dashboard (React)
+├── workspace/           # Espace temporaire de build (Images .tar)
+├── server.js            # Orchestrateur du pipeline (Node/SSH2)
+└── .env                 # Configuration sensible
+```
+
+Sonarqube details :
+SONAR_HOST_URL=http://sonarqube:9000
+SONAR_TOKEN=sqp_97b878cd2abbeff483435bcb0dcadb0e5b3f89be
+SONAR_PROJECT_KEY=projet-pcs-backend
