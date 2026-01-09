@@ -25,48 +25,75 @@ Le pipeline ne repose pas sur un simple `git pull` distant (sujet aux dérives),
 
 * **Docker Desktop** (lancé sur le poste hôte)
 * **VMWare** avec la VM Debian configurée
+* **NGrok** (permettre la connexion webhook) : https://ngrok.com/download/windows
 
 ---
 
 ## 🚀 Installation & Lancement
 
-### 1. Configuration de la VM
+## 1. Configuration de la VM
 Assurez-vous d'installer la VM avec le lien de téléchargement (fichier ovf) :
-```bash
-# Se connecter à la VM
+
+1. Se connecter à la VM
+```Plaintext
 id = debian
 mdp = debian
-# récupérer l'adresse ip de la machine (récupérer celle d'ens33)
+```
+2. Récupérer l'adresse ip de la machine (récupérer celle d'ens33)
+```Plaintext
 ip a
 ```
+
 Image d'exemple :
 ![img.png](img.png)
 
 ## 2\. Configuration du projet CI/CD
 
-### 2.1. Création de l’OAuth GitHub (CI/CD)
+### 2.1. WebHook
+
+Le problème est que le projet tourne sur localhost, donc GitHub (sur internet) ne peut pas le voir.
+Pour palier cela, on utilise Ngrok pour créer un tunnel temporaire qui donne une URL publique au projet local.
+
+Pour créer le lien webhook entre le projet CI/CD et le dépôt github :
+
+1. Télécharger Ngrok et l'installer.
+2. Dans un terminal, lancer :
+```Plaintext
+ngrok http 5001
+```
+3. Copier l'URL que Ngrok va générer. (ex : https://triangled-bert-vapidly.ngrok-free.dev)
+4. Sur le dépôt github métier, aller dans Settings > WebHooks > Add Webhooks
+5. Payload URL : Coller l'URL Ngrok et ajouter /api/webhook à la fin. (ex : https://triangled-bert-vapidly.ngrok-free.dev/api/webhook)
+6. Content type : Choisir application/json. 
+7. Laisser le reste par défaut et cliquer sur Add webhook.
+
+### 2.2. Création de l’OAuth GitHub (CI/CD)
+
+1. Afin de créer une OAuth sur github, allez sur :
 
 GitHub → Settings → Developer settings → OAuth Apps → New OAuth App
+
+2. Remplir les champs suivant :
 
 - Homepage URL : http://localhost:3000/
 - Callback URL : http://localhost:5001/auth/github/callback
 
-Récupérer :
+3. Récupérer :
 - Client ID
 - Client Secret
 
-### 2.2. Variables d’environnement
+### 2.3. Variables d’environnement
 
-Créer un fichier `.env` à la racine du projet CI/CD :
+Créer un fichier `.env` à la racine du projet CI/CD et complétez les champs suivant :
 
-```
+```Plaintext
 GITHUB_CLIENT_ID=votre_id_OAuth
 GITHUB_CLIENT_SECRET=votre_secret_OAuth
 SESSION_SECRET=votre_secret_aleatoire
 VM_IP=ip_de_la_VM
 ```
 
-### 2.3\. Lancement
+### 2.4. Lancement
 
 ```Bash
 # lancer le projet

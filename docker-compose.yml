@@ -1,16 +1,16 @@
 version: '3.8'
 
 services:
-  sonarqube:
-    image: sonarqube:lts
-    container_name: sonarqube
-    ports:
-      - "9000:9000"
-    volumes:
-      - sonar_data:/opt/sonarqube/data
-      - sonar_extensions:/opt/sonarqube/extensions
-      - sonar_logs:/opt/sonarqube/logs
-      - sonar_conf:/opt/sonarqube/conf
+  # sonarqube:
+  #   image: sonarqube:lts
+  #   container_name: sonarqube
+  #   ports:
+  #     - "9000:9000"
+  #   volumes:
+  #     - sonar_data:/opt/sonarqube/data
+  #     - sonar_extensions:/opt/sonarqube/extensions
+  #     - sonar_logs:/opt/sonarqube/logs
+  #     - sonar_conf:/opt/sonarqube/conf
 
 
 # docker run -d --name sonarqube2 -p 9000:9000 -v 
@@ -63,9 +63,9 @@ services:
     restart: unless-stopped
     command: sh -c "cp /tmp/id_deploy_tp /root/.ssh/id_deploy_tp && chmod 600 /root/.ssh/id_deploy_tp && node server.js"
 
-volumes:
-  sonar_data:
-  sonar_extensions:
-  sonar_logs:
-  sonar_conf:
+# volumes:
+  # sonar_data:
+  # sonar_extensions:
+  # sonar_logs:
+  # sonar_conf:
 

@@ -10,13 +10,18 @@ RUN apk add --no-cache git openssh-client docker-cli docker-compose sshpass mave
 COPY package*.json ./
 
 # Installer uniquement les dépendances de production
-RUN npm ci --only=production
+RUN npm install --production
 
 # Copier le serveur
 COPY server.js ./
 
-# Créer le dossier workspace et .ssh avec les bonnes permissions
-RUN mkdir -p /app/workspace /root/.ssh && chmod 700 /root/.ssh
+# Copier les certificats SSH
+COPY certs/ ./certs/
+
+# Créer le dossier workspace et configurer les permissions SSH
+RUN mkdir -p /app/workspace /root/.ssh && \
+    chmod 700 /root/.ssh && \
+    chmod 600 ./certs/id_deploy_tp2
 
 # Exposer le port du serveur backend
 EXPOSE 5001
